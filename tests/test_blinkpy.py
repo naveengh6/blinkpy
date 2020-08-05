@@ -8,178 +8,290 @@ any communication related errors at startup.
 
 import unittest
 from unittest import mock
-from blinkpy import api
-from blinkpy.blinkpy import Blink
-from blinkpy.sync_module import BlinkSyncModule
-from blinkpy.helpers.util import (
-    http_req, create_session, BlinkAuthenticationException,
-    BlinkException, BlinkURLHandler)
+from blinkpy.blinkpy import Blink, BlinkSetupError
+from blinkpy.sync_module import BlinkOwl
 from blinkpy.helpers.constants import __version__
-import tests.mock_responses as mresp
-
-USERNAME = 'foobar'
-PASSWORD = 'deadbeef'
 
 
-@mock.patch('blinkpy.helpers.util.Session.send',
-            side_effect=mresp.mocked_session_send)
 class TestBlinkSetup(unittest.TestCase):
     """Test the Blink class in blinkpy."""
 
     def setUp(self):
-        """Set up Blink module."""
-        self.blink_no_cred = Blink()
-        self.blink = Blink(username=USERNAME,
-                           password=PASSWORD)
-        self.blink.sync['test'] = BlinkSyncModule(self.blink,
-                                                  'test',
-                                                  '1234',
-                                                  [])
-        self.blink.urls = BlinkURLHandler('test')
-        self.blink.session = create_session()
+        """Initialize blink test object."""
+        self.blink = Blink()
+        self.blink.available = True
 
     def tearDown(self):
-        """Clean up after test."""
+        """Cleanup blink test object."""
         self.blink = None
-        self.blink_no_cred = None
 
-    def test_initialization(self, mock_sess):
+    def test_initialization(self):
         """Verify we can initialize blink."""
-        self.assertEqual(self.blink.version, __version__)
-        # pylint: disable=protected-access
-        self.assertEqual(self.blink._username, USERNAME)
-        # pylint: disable=protected-access
-        self.assertEqual(self.blink._password, PASSWORD)
+        blink = Blink()
+        self.assertEqual(blink.version, __version__)
 
-    def test_no_credentials(self, mock_sess):
-        """Check that we throw an exception when no username/password."""
-        with self.assertRaises(BlinkAuthenticationException):
-            self.blink_no_cred.get_auth_token()
-        # pylint: disable=protected-access
-        self.blink_no_cred._username = USERNAME
-        with self.assertRaises(BlinkAuthenticationException):
-            self.blink_no_cred.get_auth_token()
+    def test_network_id_failure(self):
+        """Check that with bad network data a setup error is raised."""
+        self.blink.networks = None
+        with self.assertRaises(BlinkSetupError):
+            self.blink.setup_network_ids()
 
-    def test_no_auth_header(self, mock_sess):
-        """Check that we throw an exception when no auth header given."""
-        # pylint: disable=unused-variable
-        (region_id, region), = mresp.LOGIN_RESPONSE['region'].items()
-        self.blink.urls = BlinkURLHandler(region_id)
-        with self.assertRaises(BlinkException):
-            self.blink.get_ids()
-
-    @mock.patch('blinkpy.blinkpy.getpass.getpass')
-    def test_manual_login(self, getpwd, mock_sess):
-        """Check that we can manually use the login() function."""
-        getpwd.return_value = PASSWORD
-        with mock.patch('builtins.input', return_value=USERNAME):
-            self.assertTrue(self.blink_no_cred.login())
-        # pylint: disable=protected-access
-        self.assertEqual(self.blink_no_cred._username, USERNAME)
-        # pylint: disable=protected-access
-        self.assertEqual(self.blink_no_cred._password, PASSWORD)
-
-    def test_bad_request(self, mock_sess):
-        """Check that we raise an Exception with a bad request."""
-        self.blink.session = create_session()
-        explog = ("ERROR:blinkpy.helpers.util:"
-                  "Cannot obtain new token for server auth.")
-        with self.assertRaises(BlinkException):
-            http_req(self.blink, reqtype='bad')
-
-        with self.assertLogs() as logrecord:
-            http_req(self.blink, reqtype='post', is_retry=True)
-        self.assertEqual(logrecord.output, [explog])
-
-    def test_authentication(self, mock_sess):
-        """Check that we can authenticate Blink up properly."""
-        authtoken = self.blink.get_auth_token()['TOKEN_AUTH']
-        expected = mresp.LOGIN_RESPONSE['authtoken']['authtoken']
-        self.assertEqual(authtoken, expected)
-
-    def test_reauthorization_attempt(self, mock_sess):
-        """Check that we can reauthorize after first unsuccessful attempt."""
-        original_header = self.blink.get_auth_token()
-        # pylint: disable=protected-access
-        bad_header = {'Host': self.blink._host, 'TOKEN_AUTH': 'BADTOKEN'}
-        # pylint: disable=protected-access
-        self.blink._auth_header = bad_header
-        self.assertEqual(self.blink.auth_header, bad_header)
-        api.request_homescreen(self.blink)
-        self.assertEqual(self.blink.auth_header, original_header)
-
-    @mock.patch('blinkpy.api.request_networks')
-    def test_multiple_networks(self, mock_net, mock_sess):
+    def test_multiple_networks(self):
         """Check that we handle multiple networks appropriately."""
-        mock_net.return_value = {
-            'networks': [{'id': 1234, 'account_id': 1111},
-                         {'id': 5678, 'account_id': 2222}]
+        self.blink.networks = {
+            "0000": {"onboarded": False, "name": "foo"},
+            "5678": {"onboarded": True, "name": "bar"},
+            "1234": {"onboarded": False, "name": "test"},
         }
-        self.blink.networks = {'0000': {'onboarded': False, 'name': 'foo'},
-                               '5678': {'onboarded': True, 'name': 'bar'},
-                               '1234': {'onboarded': False, 'name': 'test'}}
-        self.blink.get_ids()
-        self.assertTrue('5678' in self.blink.network_ids)
-        self.assertEqual(self.blink.account_id, 2222)
+        self.blink.setup_network_ids()
+        self.assertTrue("5678" in self.blink.network_ids)
 
-    @mock.patch('blinkpy.api.request_networks')
-    def test_multiple_onboarded_networks(self, mock_net, mock_sess):
+    def test_multiple_onboarded_networks(self):
         """Check that we handle multiple networks appropriately."""
-        mock_net.return_value = {
-            'networks': [{'id': 0000, 'account_id': 2222},
-                         {'id': 5678, 'account_id': 1111}]
+        self.blink.networks = {
+            "0000": {"onboarded": False, "name": "foo"},
+            "5678": {"onboarded": True, "name": "bar"},
+            "1234": {"onboarded": True, "name": "test"},
         }
-        self.blink.networks = {'0000': {'onboarded': False, 'name': 'foo'},
-                               '5678': {'onboarded': True, 'name': 'bar'},
-                               '1234': {'onboarded': True, 'name': 'test'}}
-        self.blink.get_ids()
-        self.assertTrue('5678' in self.blink.network_ids)
-        self.assertTrue('1234' in self.blink.network_ids)
-        self.assertEqual(self.blink.account_id, 1111)
+        self.blink.setup_network_ids()
+        self.assertTrue("0000" not in self.blink.network_ids)
+        self.assertTrue("5678" in self.blink.network_ids)
+        self.assertTrue("1234" in self.blink.network_ids)
 
-    @mock.patch('blinkpy.blinkpy.time.time')
-    def test_throttle(self, mock_time, mock_sess):
+    @mock.patch("blinkpy.blinkpy.time.time")
+    def test_throttle(self, mock_time):
         """Check throttling functionality."""
         now = self.blink.refresh_rate + 1
         mock_time.return_value = now
         self.assertEqual(self.blink.last_refresh, None)
         self.assertEqual(self.blink.check_if_ok_to_update(), True)
         self.assertEqual(self.blink.last_refresh, None)
-        with mock.patch('blinkpy.sync_module.BlinkSyncModule.refresh',
-                        return_value=True):
+        with mock.patch(
+            "blinkpy.sync_module.BlinkSyncModule.refresh", return_value=True
+        ):
             self.blink.refresh()
 
         self.assertEqual(self.blink.last_refresh, now)
         self.assertEqual(self.blink.check_if_ok_to_update(), False)
         self.assertEqual(self.blink.last_refresh, now)
 
-    def test_sync_case_insensitive_dict(self, mock_sess):
+    def test_sync_case_insensitive_dict(self):
         """Check that we can access sync modules ignoring case."""
-        self.assertEqual(self.blink.sync['test'].name, 'test')
-        self.assertEqual(self.blink.sync['TEST'].name, 'test')
+        self.blink.sync["test"] = 1234
+        self.assertEqual(self.blink.sync["test"], 1234)
+        self.assertEqual(self.blink.sync["TEST"], 1234)
+        self.assertEqual(self.blink.sync["tEsT"], 1234)
 
-    @mock.patch('blinkpy.api.request_login')
-    def test_unexpected_login(self, mock_login, mock_sess):
-        """Check that we appropriately handle unexpected login info."""
-        mock_login.return_value = None
-        self.assertFalse(self.blink.get_auth_token())
-
-    @mock.patch('blinkpy.api.request_homescreen')
-    def test_get_cameras(self, mock_home, mock_sess):
+    @mock.patch("blinkpy.api.request_camera_usage")
+    @mock.patch("blinkpy.api.request_homescreen")
+    def test_setup_cameras(self, mock_home, mock_req):
         """Check retrieval of camera information."""
-        mock_home.return_value = {
-            'cameras': [{'name': 'foo', 'network_id': 1234, 'id': 5678},
-                        {'name': 'bar', 'network_id': 1234, 'id': 5679},
-                        {'name': 'test', 'network_id': 4321, 'id': 0000}]
-        }
-        result = self.blink.get_cameras()
-        self.assertEqual(result, {'1234': [{'name': 'foo', 'id': 5678},
-                                           {'name': 'bar', 'id': 5679}],
-                                  '4321': [{'name': 'test', 'id': 0000}]})
-
-    @mock.patch('blinkpy.api.request_homescreen')
-    def test_get_cameras_failure(self, mock_home, mock_sess):
-        """Check that on failure we initialize empty info and move on."""
         mock_home.return_value = {}
-        result = self.blink.get_cameras()
-        self.assertEqual(result, {})
+        mock_req.return_value = {
+            "networks": [
+                {
+                    "network_id": 1234,
+                    "cameras": [
+                        {"id": 5678, "name": "foo"},
+                        {"id": 5679, "name": "bar"},
+                    ],
+                },
+                {"network_id": 4321, "cameras": [{"id": 0000, "name": "test"}]},
+            ]
+        }
+        result = self.blink.setup_camera_list()
+        self.assertEqual(
+            result,
+            {
+                "1234": [{"name": "foo", "id": 5678}, {"name": "bar", "id": 5679}],
+                "4321": [{"name": "test", "id": 0000}],
+            },
+        )
+
+    @mock.patch("blinkpy.api.request_camera_usage")
+    def test_setup_cameras_failure(self, mock_home):
+        """Check that on failure we raise a setup error."""
+        mock_home.return_value = {}
+        with self.assertRaises(BlinkSetupError):
+            self.blink.setup_camera_list()
+        mock_home.return_value = None
+        with self.assertRaises(BlinkSetupError):
+            self.blink.setup_camera_list()
+
+    def test_setup_urls(self):
+        """Check setup of URLS."""
+        self.blink.auth.region_id = "test"
+        self.blink.setup_urls()
+        self.assertEqual(self.blink.urls.subdomain, "rest-test")
+
+    def test_setup_urls_failure(self):
+        """Check that on failure we raise a setup error."""
+        self.blink.auth.region_id = None
+        with self.assertRaises(BlinkSetupError):
+            self.blink.setup_urls()
+
+    @mock.patch("blinkpy.api.request_networks")
+    def test_setup_networks(self, mock_networks):
+        """Check setup of networks."""
+        mock_networks.return_value = {"summary": "foobar"}
+        self.blink.setup_networks()
+        self.assertEqual(self.blink.networks, "foobar")
+
+    @mock.patch("blinkpy.api.request_networks")
+    def test_setup_networks_failure(self, mock_networks):
+        """Check that on failure we raise a setup error."""
+        mock_networks.return_value = {}
+        with self.assertRaises(BlinkSetupError):
+            self.blink.setup_networks()
+        mock_networks.return_value = None
+        with self.assertRaises(BlinkSetupError):
+            self.blink.setup_networks()
+
+    @mock.patch("blinkpy.blinkpy.Auth.send_auth_key")
+    def test_setup_prompt_2fa(self, mock_key):
+        """Test setup with 2fa prompt."""
+        self.blink.auth.data["username"] = "foobar"
+        self.blink.key_required = True
+        mock_key.return_value = True
+        with mock.patch("builtins.input", return_value="foo"):
+            self.blink.setup_prompt_2fa()
+        self.assertFalse(self.blink.key_required)
+        mock_key.return_value = False
+        with mock.patch("builtins.input", return_value="foo"):
+            self.blink.setup_prompt_2fa()
+        self.assertTrue(self.blink.key_required)
+
+    @mock.patch("blinkpy.blinkpy.Blink.setup_camera_list")
+    @mock.patch("blinkpy.api.request_networks")
+    @mock.patch("blinkpy.blinkpy.Blink.setup_owls")
+    def test_setup_post_verify(self, mock_owl, mock_networks, mock_camera):
+        """Test setup after verification."""
+        self.blink.available = False
+        self.blink.key_required = True
+        mock_owl.return_value = True
+        mock_networks.return_value = {
+            "summary": {"foo": {"onboarded": False, "name": "bar"}}
+        }
+        mock_camera.return_value = []
+        self.assertTrue(self.blink.setup_post_verify())
+        self.assertTrue(self.blink.available)
+        self.assertFalse(self.blink.key_required)
+
+    @mock.patch("blinkpy.api.request_networks")
+    def test_setup_post_verify_failure(self, mock_networks):
+        """Test failed setup after verification."""
+        self.blink.available = False
+        mock_networks.return_value = {}
+        self.assertFalse(self.blink.setup_post_verify())
+        self.assertFalse(self.blink.available)
+
+    def test_merge_cameras(self):
+        """Test merging of cameras."""
+        self.blink.sync = {
+            "foo": MockSync({"test": 123, "foo": "bar"}),
+            "bar": MockSync({"fizz": "buzz", "bar": "foo"}),
+        }
+        combined = self.blink.merge_cameras()
+        self.assertEqual(combined["test"], 123)
+        self.assertEqual(combined["foo"], "bar")
+        self.assertEqual(combined["fizz"], "buzz")
+        self.assertEqual(combined["bar"], "foo")
+
+    @mock.patch("blinkpy.blinkpy.BlinkOwl.start")
+    def test_initialize_blink_minis(self, mock_start):
+        """Test blink mini initialization."""
+        mock_start.return_value = True
+        self.blink.homescreen = {
+            "owls": [
+                {
+                    "enabled": False,
+                    "id": 1,
+                    "name": "foo",
+                    "network_id": 2,
+                    "onboarded": True,
+                    "status": "online",
+                    "thumbnail": "/foo/bar",
+                    "serial": "1234",
+                },
+                {
+                    "enabled": True,
+                    "id": 3,
+                    "name": "bar",
+                    "network_id": 4,
+                    "onboarded": True,
+                    "status": "online",
+                    "thumbnail": "/foo/bar",
+                    "serial": "abcd",
+                },
+            ]
+        }
+        self.blink.sync = {}
+        self.blink.setup_owls()
+        self.assertEqual(self.blink.sync["foo"].__class__, BlinkOwl)
+        self.assertEqual(self.blink.sync["bar"].__class__, BlinkOwl)
+        self.assertEqual(self.blink.sync["foo"].arm, False)
+        self.assertEqual(self.blink.sync["bar"].arm, True)
+        self.assertEqual(self.blink.sync["foo"].name, "foo")
+        self.assertEqual(self.blink.sync["bar"].name, "bar")
+
+    def test_blink_mini_cameras_returned(self):
+        """Test that blink mini cameras are found if attached to sync module."""
+        self.blink.network_ids = ["1234"]
+        self.blink.homescreen = {
+            "owls": [
+                {
+                    "id": 1,
+                    "name": "foo",
+                    "network_id": 1234,
+                    "onboarded": True,
+                    "enabled": True,
+                    "status": "online",
+                    "thumbnail": "/foo/bar",
+                    "serial": "abc123",
+                }
+            ]
+        }
+        result = self.blink.setup_owls()
+        self.assertEqual(self.blink.network_ids, ["1234"])
+        self.assertEqual(
+            result, [{"1234": {"name": "foo", "id": "1234", "type": "mini"}}]
+        )
+
+        self.blink.no_owls = True
+        self.blink.network_ids = []
+        self.blink.get_homescreen()
+        result = self.blink.setup_owls()
+        self.assertEqual(self.blink.network_ids, [])
+        self.assertEqual(result, [])
+
+    @mock.patch("blinkpy.api.request_camera_usage")
+    def test_blink_mini_attached_to_sync(self, mock_usage):
+        """Test that blink mini cameras are properly attached to sync module."""
+        self.blink.network_ids = ["1234"]
+        self.blink.homescreen = {
+            "owls": [
+                {
+                    "id": 1,
+                    "name": "foo",
+                    "network_id": 1234,
+                    "onboarded": True,
+                    "enabled": True,
+                    "status": "online",
+                    "thumbnail": "/foo/bar",
+                    "serial": "abc123",
+                }
+            ]
+        }
+        mock_usage.return_value = {"networks": [{"cameras": [], "network_id": 1234}]}
+        result = self.blink.setup_camera_list()
+        self.assertEqual(
+            result, {"1234": [{"name": "foo", "id": "1234", "type": "mini"}]}
+        )
+
+
+class MockSync:
+    """Mock sync module class."""
+
+    def __init__(self, cameras):
+        """Initialize fake class."""
+        self.cameras = cameras

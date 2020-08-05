@@ -1,12 +1,13 @@
 """Script to run blinkpy as an app."""
 from os import environ
 from datetime import datetime, timedelta
-from blinkpy import blinkpy
+from blinkpy.blinkpy import Blink
+from blinkpy.auth import Auth
+from blinkpy.helpers.util import json_load
 
 
-USERNAME = environ.get('USERNAME')
-PASSWORD = environ.get('PASSWORD')
-TIMEDELTA = timedelta(environ.get('TIMEDELTA', 1))
+CREDFILE = environ.get("CREDFILE")
+TIMEDELTA = timedelta(environ.get("TIMEDELTA", 1))
 
 
 def get_date():
@@ -14,18 +15,25 @@ def get_date():
     return (datetime.now() - TIMEDELTA).isoformat()
 
 
-def download_videos(blink, save_dir='/media'):
+def download_videos(blink, save_dir="/media"):
     """Make request to download videos."""
     blink.download_videos(save_dir, since=get_date())
 
 
 def start():
     """Startup blink app."""
-    blink = blinkpy.Blink(username=USERNAME, password=PASSWORD)
+    blink = Blink()
+    blink.auth = Auth(json_load(CREDFILE))
     blink.start()
     return blink
 
 
-if __name__ == '__main__':
-    BLINK = start()
-    download_videos(BLINK)
+def main():
+    """Run the app."""
+    blink = start()
+    download_videos(blink)
+    blink.save(CREDFILE)
+
+
+if __name__ == "__main__":
+    main()
